@@ -1,0 +1,175 @@
+   * {
+     margin: 0;
+     padding: 0;
+   }
+
+   .topnav {
+     display: flex;
+     align-items: center;
+     justify-content: space-between;
+     padding: 15px 160px;
+     background-color: #fff;
+     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+     position: fixed;
+     /* Keep it fixed */
+     top: 0;
+     left: 0;
+     width: 100%;
+     box-sizing: border-box;
+     z-index: 1000;
+     /* Ensure it stays on top */
+   }
+
+   .nav_logo {
+     width: 120px;
+     height: auto;
+   }
+
+   /* Center nav links (desktop only) */
+   .nav-center {
+     position: absolute;
+     /* Center it relative to .topnav */
+     left: 50%;
+     top: 50%;
+     transform: translate(-50%, -50%);
+     /* Perfect center vertically and horizontally */
+     display: flex;
+     gap: 30px;
+     z-index: 1;
+   }
+
+   .nav-center a {
+     text-decoration: none;
+     color: #333;
+     font-weight: 500;
+     transition: color 0.3s;
+   }
+
+   .nav-center a:hover {
+     color: #007BFF;
+   }
+
+   #nav_icon {
+     display: none;
+     cursor: pointer;
+     z-index: 1001;
+   }
+
+   .nav_menu {
+     list-style: none;
+     display: flex;
+     align-items: center;
+     gap: 20px;
+   }
+
+   .nav_menu li {
+     /* position: relative; */
+   }
+
+   .nav_menu a {
+     text-decoration: none;
+     color: #333;
+     font-weight: 500;
+   }
+
+   .login-signup .nav_link {
+     padding: 8px 16px;
+     background-color: #007BFF;
+     color: #fff;
+     border-radius: 5px;
+   }
+
+   .login-signup .nav_link:hover {
+     background-color: #0056b3;
+   }
+
+   .nav_profile {
+     cursor: pointer;
+     position: relative;
+   }
+
+   .nav_profile .sub_menu {
+     display: none;
+     position: absolute;
+     font-size: 15px;
+     width: 120px;
+     top: 100%;
+     right: 0;
+     background: #fff;
+     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+     list-style: none;
+     padding: 10px 0;
+     overflow: hidden;
+     z-index: 999;
+     border-radius: 6px;
+   }
+
+   .nav_profile:hover .sub_menu {
+     display: block;
+   }
+
+   .sub_nav_item a {
+     padding: 10px 20px;
+     display: block;
+     color: #333;
+     text-decoration: none;
+   }
+
+   .sub_nav_item a:hover {
+     background-color: #f0f0f0;
+   }
+
+   /* Hide mobile duplicates on desktop */
+   .mobile-only {
+     display: none;
+   }
+
+   body{
+    /* margin-top: 100px; */
+   }
+
+   /* Mobile styles */
+   @media (max-width: 768px) {
+     .nav-center {
+       display: none;
+     }
+
+     #nav_icon {
+       display: block;
+     }
+
+     .mobile-only {
+       display: block;
+     }
+
+     .nav_menu {
+       flex-direction: column;
+       position: absolute;
+       top: 100%;
+       right: 0;
+       width: 100%;
+       background: #fff;
+       border-top: 1px solid #ddd;
+       display: none;
+       padding: 15px 0;
+       z-index: 1000;
+     }
+
+     .nav_menu.active {
+       display: flex;
+     }
+
+     .nav_menu li {
+       text-align: center;
+       margin: 10px 0;
+     }
+
+     .nav_menu .sub_menu {
+       position: static;
+       box-shadow: none;
+     }
+
+     .nav_menu .nav_profile:hover .sub_menu {
+       display: block;
+     }
+   }

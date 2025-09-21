@@ -1,0 +1,188 @@
+.entp-herosection{
+    background: #000;
+    color: #fff;
+    text-align: center;
+}
+.entp-image{
+    padding-top: 26px;
+}
+.entp-image img{
+  height: 350px;
+  width: 100%;
+  margin: auto;
+  object-fit: contain;
+}
+
+.entp-herosection h1{
+    text-align: center;
+    font-size: 50px;
+    margin: 20px;
+}
+
+.entp-herosection .entp-text{
+    text-align: center;
+    font-size: 18px;
+    margin: 26px;
+    line-height: 1.5;
+}
+
+.entp-herosection .entp-btn a{
+    text-decoration: none;
+    color: #000;
+}
+
+.entp-btn {
+  outline: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #40B3A2;
+  min-width: 200px;
+  border: 0;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .1);
+  box-sizing: border-box;
+  padding: 16px 20px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  overflow: hidden;
+  cursor: pointer;
+  margin-bottom: 35px;
+}
+
+.entp-btn:hover {
+  opacity: .95;
+}
+
+.entp-btn .animation {
+  border-radius: 100%;
+  animation: ripple 0.6s linear infinite;
+}
+
+@keyframes ripple {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.1), 0 0 0 20px rgba(255, 255, 255, 0.1), 0 0 0 40px rgba(255, 255, 255, 0.1), 0 0 0 60px rgba(255, 255, 255, 0.1);
+  }
+
+  100% {
+    box-shadow: 0 0 0 20px rgba(255, 255, 255, 0.1), 0 0 0 40px rgba(255, 255, 255, 0.1), 0 0 0 60px rgba(255, 255, 255, 0.1), 0 0 0 80px rgba(255, 255, 255, 0);
+  }
+}
+
+.entp-cards{
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 15px 30px;
+}
+
+.entp-cards .entp-card-container{
+  display: flex;
+  margin-top: 30px;
+  padding: 15px 30px;
+  gap: 20px;
+}
+
+
+.entp-feature-card {
+    padding: 14px;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease;
+    background: #ffffff2b;
+    text-align: center;
+}
+
+.entp-feature-card:hover {
+    transform: translateY(-5px);
+}
+
+.entp-feature-card img {
+    width: 100%;
+    height: 550px;
+    object-fit: cover; 
+    margin-bottom: 20px;
+}
+
+.entp-feature-card h3 {
+    font-size: 1.2em;
+    margin-bottom: 10px;
+}
+
+.entp-feature-card p {
+    color: #666;
+    font-size: 0.95em;
+}
+
+.entp-calltoaction{
+  margin: 15px 30px; 
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 50px;
+  padding: 16px;
+}
+
+.entp-calltoaction .entp-right-container .entp-right p{
+  margin: 10px 0px 14px 0px;
+}
+.entp-calltoaction .entp-right-container .entp-right h2{
+  margin-top: 20px;
+}
+
+.entp-calltoaction .entp-right{
+  height: 450px;
+  padding: 40px 12px 14px 12px;
+  width: 500px;
+  margin-top: 40px;
+  overflow: hidden;
+  box-shadow: -1px 0px 19px -6px rgba(0,0,0,0.8);
+}
+
+.entp-calltoaction .entp-right-container .entp-form input, textarea{
+  padding: 16px 10px;
+  margin-top: 14px;
+  border: none;
+  width: 400px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+}
+
+.entp-calltoaction .entp-right-container .entp-form input, textarea :focus{
+  border: none;
+}
+
+.entp-calltoaction .entp-right .entp-form button{
+  padding: 16px 10px;
+  width: 420px;
+  box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+  color: white;
+  background: #40B3A2;
+  border: none;
+  margin-top: 16px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.entp-calltoaction .entp-right .entp-form button:hover{
+  background: #2c8477;
+}
+
+@media (max-width: 600px) {
+   .entp-calltoaction{
+    flex-direction: column;
+    align-items: center;
+   }
+
+   .features-container {
+       margin-top: 30px;
+   }
+
+   .entp-cards .entp-card-container {
+       flex-direction: column;
+       align-items: center;
+       padding: 0px;
+   }
+}

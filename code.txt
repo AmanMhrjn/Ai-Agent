@@ -1,0 +1,2093 @@
+// Dashboard page code 1
+<?php
+session_start();
+require_once 'config/database.php';
+
+// Check login
+if (!isset($_SESSION['id']) || !isset($_SESSION['companyname'])) {
+    echo '<!DOCTYPE html>
+    <html lang="en">
+    <head><meta charset="UTF-8"><title>Access Denied</title></head>
+    <body><h2>Please login to access dashboard</h2></body>
+    </html>';
+    exit;
+}
+
+$user_id = $_SESSION['id'];
+$company_name = $_SESSION['companyname'];
+
+// --- Date Filter ---
+$from_date = isset($_GET['from_date']) ? $_GET['from_date'] : '';
+$to_date   = isset($_GET['to_date']) ? $_GET['to_date'] : '';
+
+// --- Fetch message balance ---
+$query = "SELECT total_messages, messages_used, DATE(last_updated) as date
+          FROM message_balance
+          WHERE company_name = :company_name";
+
+$params = [':company_name' => $company_name];
+
+if ($from_date && $to_date) {
+    $query .= " AND DATE(last_updated) BETWEEN :from_date AND :to_date";
+    $params[':from_date'] = $from_date;
+    $params[':to_date'] = $to_date;
+}
+
+$query .= " ORDER BY last_updated ASC";
+
+$stmt_balance = $pdo->prepare($query);
+$stmt_balance->execute($params);
+$balance_result = $stmt_balance->fetchAll(PDO::FETCH_ASSOC);
+
+$labels = [];
+$messageData = [];
+$totalMessages = 0;
+$totalUsed = 0;
+$latestBalance = null;
+
+foreach ($balance_result as $row) {
+    $totalMessages += (int)$row['total_messages'];
+    $totalUsed += (int)$row['messages_used'];
+    $remaining = $totalMessages - $totalUsed;
+
+    $labels[] = $row['date'];
+    $messageData[] = $remaining;
+    $latestBalance = [
+        'total_messages' => $totalMessages,
+        'messages_used' => $totalUsed,
+        'remaining' => $remaining
+    ];
+}
+
+// --- Auto-create agents for approved payments ---
+$stmt_new_agents = $pdo->prepare("
+    SELECT id, platform, plan
+    FROM payment_requests
+    WHERE user_id = :user_id
+      AND status = 'approved'
+      AND id NOT IN (SELECT payment_id FROM agents)
+");
+$stmt_new_agents->execute([':user_id' => $user_id]);
+$new_agents = $stmt_new_agents->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($new_agents as $payment) {
+    $insertAgent = $pdo->prepare("
+        INSERT INTO agents (user_id, company_name, platform, plan, payment_id)
+        VALUES (:user_id, :company_name, :platform, :plan, :payment_id)
+    ");
+    $insertAgent->execute([
+        ':user_id' => $user_id,
+        ':company_name' => $company_name,
+        ':platform' => $payment['platform'],
+        ':plan' => $payment['plan'],
+        ':payment_id' => $payment['id']
+    ]);
+}
+
+// --- Fetch agents ---
+$stmt_agents = $pdo->prepare("
+    SELECT id, platform, plan
+    FROM agents
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC
+");
+$stmt_agents->execute([':user_id' => $user_id]);
+$agents = $stmt_agents->fetchAll(PDO::FETCH_ASSOC);
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Agents Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="assets/css/main.css">
+<link rel="stylesheet" href="assets/css/navbar.css">
+<link rel="stylesheet" href="assets/css/footer.css">
+<style>
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px; }
+    .agent-card { margin: 10px; padding: 10px; border: 1px solid #ccc; border-radius: 5px; }
+    .add-agent-btn { margin: 10px; padding: 10px 20px; cursor: pointer; border-radius: 5px; }
+</style>
+</head>
+<body>
+<?php include_once 'assets/component/navbar.php'; ?>
+
+<h1 class="agent-heading">AI Agents Dashboard</h1>
+
+<!-- Date Filter -->
+<div class="section">
+    <form method="get" style="text-align:center; margin-bottom:20px;">
+        <label>From: <input type="date" name="from_date" value="<?= htmlspecialchars($from_date) ?>"></label>
+        <label>To: <input type="date" name="to_date" value="<?= htmlspecialchars($to_date) ?>"></label>
+        <button type="submit">Filter</button>
+    </form>
+</div>
+
+<!-- Message Stats Cards -->
+<?php if ($latestBalance): ?>
+<div class="message-balance-card" style="display:flex; gap:20px; justify-content:center; margin:30px 0;">
+    <div style="background:#e0f7fa; padding:20px; border-radius:10px; text-align:center; width:200px;">
+        <h3>Total Messages</h3>
+        <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['total_messages'] ?></p>
+    </div>
+    <div style="background:#fff3e0; padding:20px; border-radius:10px; text-align:center; width:200px;">
+        <h3>Messages Used</h3>
+        <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['messages_used'] ?></p>
+    </div>
+    <div style="background:#e8f5e9; padding:20px; border-radius:10px; text-align:center; width:200px;">
+        <h3>Remaining Messages</h3>
+        <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['remaining'] ?></p>
+    </div>
+</div>
+
+<?php if ($latestBalance['remaining'] <= 0): ?>
+    <div style="text-align:center; color:red; font-weight:bold; margin-bottom:20px;">
+        The message token is empty. Please recharge.
+    </div>
+<?php endif; ?>
+<?php endif; ?>
+
+<!-- Daily Remaining Messages Chart -->
+<div class="section">
+    <h2 style="text-align:center;">Daily Remaining Messages</h2>
+    <canvas id="dailyMessageChart" style="max-width:1000px; margin:20px auto; display:block;"></canvas>
+    <script>
+        const ctx = document.getElementById('dailyMessageChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: <?= json_encode($labels) ?>,
+                datasets: [{
+                    label: 'Remaining Messages',
+                    data: <?= json_encode($messageData) ?>,
+                    backgroundColor: 'rgba(54,162,235,0.2)',
+                    borderColor: 'rgba(54,162,235,1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { title: { display: true, text: 'Date' } },
+                    y: { beginAtZero: true, title: { display: true, text: 'Messages' } }
+                }
+            }
+        });
+    </script>
+</div>
+
+<!-- Agents List -->
+<div class="section">
+    <h2>Agents</h2>
+    <div class="agents-list" id="agents-list">
+        <?php
+        if (!empty($agents)) {
+            foreach ($agents as $row) {
+                $agentTitle = htmlspecialchars($row['platform'] ?: 'Unnamed Platform') . ' (' . htmlspecialchars(ucfirst($row['plan'])) . ')';
+                echo '<div class="agent-card">';
+                echo '<a href="agent.php?agent_id=' . $row['id'] . '">' . $agentTitle . '</a>';
+                echo '</div>';
+            }
+        } else {
+            echo '<p style="text-align:center; color: #555; font-weight: bold; margin: 20px 0;">No agents to preview. Buy agents to create your first one.</p>';
+        }
+        ?>
+    </div>
+    <div style="text-align:center;">
+        <button type="button" class="add-agent-btn" onclick="window.location.href='manageagents.php'">Manage Your Agents</button>
+        <button type="button" class="add-agent-btn" onclick="window.location.href='pricing.php'">Buy New Agent</button>
+    </div>
+</div>
+
+
+<!-- Purchased Agents Table -->
+<div class="section" style="overflow-x:auto;">
+    <h2>Your Purchased Agents</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Payment Method</th>
+                <th>Amount</th>
+                <th>Plan</th>
+                <th>Status</th>
+                <th>Payment Date</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php
+            $stmt = $pdo->prepare("SELECT id, payment_method, amount, plan, status, created_at
+                                   FROM payment_requests
+                                   WHERE company_name = :company_name
+                                   ORDER BY created_at DESC");
+            $stmt->execute([':company_name' => $company_name]);
+            $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($payments)) {
+                echo '<tr><td colspan="6" style="text-align:center;">No payments found for your company.</td></tr>';
+            } else {
+                $counter = 1;
+                foreach ($payments as $row) {
+                    $status_text = ucfirst($row['status']);
+                    echo '<tr>';
+                    echo '<td>' . $counter . '</td>';
+                    echo '<td>' . htmlspecialchars($row['payment_method']) . '</td>';
+                    echo '<td>' . htmlspecialchars($row['amount']) . '</td>';
+                    echo '<td>' . htmlspecialchars($row['plan']) . '</td>';
+                    echo '<td>' . htmlspecialchars($status_text) . '</td>';
+                    echo '<td>' . htmlspecialchars($row['created_at']) . '</td>';
+                    echo '</tr>';
+                    $counter++;
+                }
+            }
+            ?>
+        </tbody>
+    </table>
+</div>
+
+<?php include_once 'assets/component/footer.php'; ?>
+</body>
+</html>
+
+============================================================================================================
+
+agent.php
+<?php
+session_start();
+require_once 'config/database.php'; // defines $pdo
+
+// --- Only logged-in users ---
+if (!isset($_SESSION['id']) || !isset($_SESSION['companyname'])) {
+    echo '<!DOCTYPE html>
+    <html lang="en">
+    <head><meta charset="UTF-8"><title>Access Denied</title></head>
+    <body><h2>Please login to access dashboard</h2></body></html>';
+    exit;
+}
+
+$user_id = $_SESSION['id'];
+$company_name = $_SESSION['companyname'];
+
+// --- Get latest selected platform + plan ---
+$stmt_platform = $pdo->prepare("SELECT platform, plan FROM payment_requests WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 1");
+$stmt_platform->execute(['user_id' => $user_id]);
+$latest_agent = $stmt_platform->fetch(PDO::FETCH_ASSOC);
+$selected_platform = $latest_agent['platform'] ?? 'default';
+$selected_plan     = $latest_agent['plan'] ?? 'default';
+
+// --- Date Filters ---
+$from_date = !empty($_GET['from_date']) ? $_GET['from_date'] : '';
+$to_date   = !empty($_GET['to_date']) ? $_GET['to_date'] : '';
+
+// --- Pagination (products) ---
+$page = isset($_GET['page']) && is_numeric($_GET['page']) ? (int)$_GET['page'] : 1;
+$records_per_page = 10;
+$offset = ($page - 1) * $records_per_page;
+
+// --- Count products ---
+$stmt_total = $pdo->prepare("SELECT COUNT(*) AS total FROM products WHERE company_name = :company_name");
+$stmt_total->execute(['company_name' => $company_name]);
+$total_row = $stmt_total->fetch(PDO::FETCH_ASSOC);
+$total_records = $total_row['total'] ?? 0;
+$total_pages = ceil($total_records / $records_per_page);
+
+// --- Fetch products ---
+$stmt = $pdo->prepare("SELECT * FROM products WHERE company_name = :company_name ORDER BY id DESC LIMIT :limit OFFSET :offset");
+$stmt->bindValue(':company_name', $company_name, PDO::PARAM_STR);
+$stmt->bindValue(':limit', $records_per_page, PDO::PARAM_INT);
+$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+$stmt->execute();
+$products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- Fetch message balance (cumulative) ---
+$query = "SELECT total_messages, messages_used, last_updated 
+          FROM message_balance 
+          WHERE company_name = :company_name 
+            AND platform = :platform";
+
+$params = [
+    'company_name' => $company_name,
+    'platform'     => $selected_platform
+];
+
+if ($selected_plan && $selected_plan !== 'default') {
+    $query .= " AND (plan = :plan OR plan IS NULL)";
+    $params['plan'] = $selected_plan;
+}
+
+if ($from_date && $to_date) {
+    $query .= " AND DATE(last_updated) BETWEEN :from_date AND :to_date";
+    $params['from_date'] = $from_date;
+    $params['to_date']   = $to_date;
+}
+
+$query .= " ORDER BY last_updated ASC";
+$stmt_balance = $pdo->prepare($query);
+$stmt_balance->execute($params);
+$balance_rows = $stmt_balance->fetchAll(PDO::FETCH_ASSOC);
+
+// --- Prepare cumulative data for chart ---
+$labels = [];
+$messageData = [];
+$total_messages = 0;
+$total_used = 0;
+$cumulative_remaining = 0;
+
+foreach ($balance_rows as $row) {
+    $total_messages += (int)$row['total_messages'];
+    $total_used     += (int)$row['messages_used'];
+    $cumulative_remaining = $total_messages - $total_used;
+
+    $labels[] = date('Y-m-d H:i', strtotime($row['last_updated']));
+    $messageData[] = $cumulative_remaining;
+}
+
+if (empty($balance_rows)) {
+    $labels = [date('Y-m-d')];
+    $messageData = [0];
+}
+
+$latestBalance = [
+    'total_messages' => $total_messages,
+    'messages_used'  => $total_used,
+    'remaining'      => max(0, $cumulative_remaining)
+];
+
+// Pie chart data
+$pie_labels = ['Used Messages', 'Remaining Messages'];
+$pie_values = [$latestBalance['messages_used'], $latestBalance['remaining']];
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Dashboard</title>
+<link rel="stylesheet" href="assets/css/navbar.css">
+<link rel="stylesheet" href="assets/css/main.css">
+<link rel="stylesheet" href="assets/css/agent.css">
+<link rel="stylesheet" href="assets/css/footer.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+.agent-container { margin-top:60px; }
+.agent-table img { width:50px; }
+.action-btns { display:flex; gap:10px; margin-top:20px; justify-content:center; }
+.action-btns a { padding:10px 20px; background:#5cb85c; color:#fff; text-decoration:none; border-radius:4px; }
+
+/* ✅ Message Usage History Table Styling */
+.agent-message-usage-section {
+    margin-top: 40px;
+    padding: 20px;
+}
+
+.agent-message-usage-section table {
+    width: 90%;
+    margin: auto;
+    border-collapse: collapse;
+    font-family: Arial, sans-serif;
+    background: #fff;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.agent-message-usage-section thead {
+    background: #1976d2;
+    color: #fff;
+}
+
+.agent-message-usage-section th,
+.agent-message-usage-section td {
+    padding: 12px 15px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.agent-message-usage-section tbody tr:nth-child(even) {
+    background: #f9f9f9;
+}
+
+.agent-message-usage-section tbody tr:hover {
+    background: #e3f2fd;
+}
+
+.agent-message-usage-section th {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.agent-message-usage-section td {
+    color: #333;
+}
+
+.agent-message-usage-section h2 {
+    text-align: center;
+    margin-bottom: 15px;
+    font-size: 20px;
+    color: #444;
+}
+</style>
+</head>
+<body>
+<?php include_once 'assets/component/navbar.php'; ?>
+
+<div class="agent-container">
+    <h1 style="text-align:center; margin-top: 16px;"><?= htmlspecialchars($selected_platform) ?> (<?= htmlspecialchars($selected_plan) ?>)</h1>
+
+    <!-- Date filter -->
+    <form method="get" style="margin:20px 0; text-align:center;">
+        <label>From: <input type="date" name="from_date" value="<?= htmlspecialchars($from_date) ?>"></label>
+        <label>To: <input type="date" name="to_date" value="<?= htmlspecialchars($to_date) ?>"></label>
+        <button type="submit">Filter</button>
+    </form>
+
+    <!-- Message Balance -->
+    <div class="message-balance-card" style="display:flex; gap:20px; justify-content:center; margin:30px 0;">
+        <div style="background:#e0f7fa; padding:20px; border-radius:10px; text-align:center; width:200px;">
+            <h3>Total Messages</h3>
+            <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['total_messages'] ?></p>
+        </div>
+        <div style="background:#fff3e0; padding:20px; border-radius:10px; text-align:center; width:200px;">
+            <h3>Messages Used</h3>
+            <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['messages_used'] ?></p>
+        </div>
+        <div style="background:#e8f5e9; padding:20px; border-radius:10px; text-align:center; width:200px;">
+            <h3>Remaining Messages</h3>
+            <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['remaining'] ?></p>
+        </div>
+    </div>
+    <?php if ($latestBalance['remaining'] <= 0): ?>
+        <div style="text-align:center; color:red; font-weight:bold; margin-bottom:20px;">
+            The message token is empty. Please recharge.
+        </div>
+    <?php endif; ?>
+
+    <!-- Line Chart -->
+    <h2 style="text-align:center;">Daily Remaining Messages</h2>
+    <canvas id="dailyMessageChart" style="max-width:1000px; margin:20px auto; display:block;"></canvas>
+    <script>
+        const ctx = document.getElementById('dailyMessageChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: <?= json_encode($labels) ?>,
+                datasets: [{
+                    label: 'Remaining Messages',
+                    data: <?= json_encode($messageData) ?>,
+                    backgroundColor: 'rgba(54,162,235,0.2)',
+                    borderColor: 'rgba(54,162,235,1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: { responsive:true, scales: { y: { beginAtZero:true } } }
+        });
+    </script>
+
+    <!-- Pie Chart -->
+    <h2 style="text-align:center;">Message Usage Pie Chart</h2>
+    <canvas id="messagePieChart" style="max-width:500px; margin:20px auto; display:block;"></canvas>
+    <script>
+        const ctxPie = document.getElementById('messagePieChart').getContext('2d');
+        new Chart(ctxPie, {
+            type:'pie',
+            data:{ labels: <?= json_encode($pie_labels) ?>, datasets:[{ data: <?= json_encode($pie_values) ?>, backgroundColor:['rgba(255,99,132,0.7)','rgba(75,192,192,0.7)'] }]},
+            options:{ responsive:true, plugins:{ legend:{ position:'bottom' } } }
+        });
+    </script>
+
+    <!-- ✅ Message Usage Table -->
+    <div class="agent-message-usage-section">
+        <h2>Message Usage History (<?= htmlspecialchars($selected_platform) ?>)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Total Messages</th>
+                    <th>Messages Used</th>
+                    <th>Remaining</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!$balance_rows): ?>
+                    <tr><td colspan="5">No message usage records found.</td></tr>
+                <?php else: 
+                    $i=1;
+                    $running_total = 0;
+                    $running_used = 0;
+                    foreach ($balance_rows as $row): 
+                        $running_total += (int)$row['total_messages'];
+                        $running_used  += (int)$row['messages_used'];
+                        $remaining = $running_total - $running_used;
+                ?>
+                    <tr>
+                        <td><?= $i++ ?></td>
+                        <td><?= htmlspecialchars($row['total_messages']) ?></td>
+                        <td><?= htmlspecialchars($row['messages_used']) ?></td>
+                        <td><?= $remaining ?></td>
+                        <td><?= date("Y-m-d H:i", strtotime($row['last_updated'])) ?></td>
+                    </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Products Table -->
+    <div class="agent-product-table-section" style="margin-top:40px;">
+        <h2>Product Details</h2>
+        <table class="agent-table" border="1" cellpadding="5" cellspacing="0">
+            <thead>
+                <tr>
+                    <th>Id</th><th>Company</th><th>Images</th><th>Name</th><th>Offer Price</th><th>Color</th><th>Warranty</th><th>Availability</th><th>Description</th><th>Status</th><th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!$products): ?>
+                    <tr><td colspan="11" style="text-align:center;">No products found.</td></tr>
+                <?php else: $counter = $offset + 1; foreach ($products as $row): ?>
+                    <tr>
+                        <td><?= $counter++ ?></td>
+                        <td><?= htmlspecialchars($row['company_name']) ?></td>
+                        <td>
+                            <?php if ($row['photo_1']): ?><img src="<?= htmlspecialchars($row['photo_1']) ?>" style="width:50px;"><?php endif; ?>
+                            <?php if ($row['photo_2']): ?><img src="<?= htmlspecialchars($row['photo_2']) ?>" style="width:50px;"><?php endif; ?>
+                        </td>
+                        <td><?= htmlspecialchars($row['product_name']) ?></td>
+                        <td><?= htmlspecialchars($row['offer_price']) ?></td>
+                        <td><?= htmlspecialchars($row['color']) ?></td>
+                        <td><?= htmlspecialchars($row['warranty']) ?></td>
+                        <td><?= htmlspecialchars($row['availability']) ?></td>
+                        <td><?= htmlspecialchars($row['description']) ?></td>
+                        <td><?= $row['status']==1 ? 'Enabled' : 'Disabled' ?></td>
+                        <td>
+                            <button onclick="location.href='updateProduct.php?id=<?= $row['id'] ?>'">Edit</button>
+                            <button onclick="deleteProduct(<?= $row['id'] ?>)">Delete</button>
+                            <button onclick="toggleStatus(<?= $row['id'] ?>)"><?= $row['status']==1 ? 'Disable':'Enable' ?></button>
+                        </td>
+                    </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+
+        <!-- Pagination -->
+        <div style="text-align:center; margin-top:20px;">
+            <?php for ($p=1; $p<=$total_pages; $p++): ?>
+                <a href="?page=<?= $p ?>&from_date=<?= htmlspecialchars($from_date) ?>&to_date=<?= htmlspecialchars($to_date) ?>" style="margin:0 5px; <?= $p==$page?'font-weight:bold;':'' ?>"><?= $p ?></a>
+            <?php endfor; ?>
+        </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="action-btns">
+        <a href="dashboard.php">Dashboard</a>
+        <a href="addProduct.php">Add Products</a>
+    </div>
+</div>
+
+<script>
+function deleteProduct(id){if(confirm('Are you sure you want to delete this product?')){window.location.href='deleteProduct.php?id='+id;}}
+function toggleStatus(id){window.location.href='toggleProductStatus.php?id='+id;}
+</script>
+
+<?php include_once 'assets/component/footer.php'; ?>
+</body>
+</html>
+
+
+
+==========================================================
+Payment.php
+===========================================================
+
+<?php
+session_start();
+require_once 'config/database.php';
+
+$user_id = $_SESSION['id'] ?? 0;
+$company_name = $_SESSION['companyname'] ?? '';
+
+if (!$user_id) {
+    header("Location: assets/component/login.php");
+    exit;
+}
+
+$plan = $_GET['plan'] ?? 'free';
+$amount_usd = (float) ($_GET['amount'] ?? 0);
+$exchange_rate = 139.72;
+$amount_npr = $amount_usd * $exchange_rate;
+$amount_paisa = (int) round($amount_npr * 100);
+
+$khalti_public = "test_public_key_xxxxx";
+$plan_tokens = ['free' => 5000, 'premium' => 15000, 'platinum' => 50000];
+$tokens_to_add = $plan_tokens[$plan] ?? 0;
+?>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Page</title>
+    <link rel="stylesheet" href="assets/css/navbar.css">
+    <link rel="stylesheet" href="assets/css/footer.css">
+    <link rel="stylesheet" href="assets/css/payment.css">
+    <script src="https://khalti.com/static/khalti-checkout.js"></script>
+    <style>
+        .success-box { background:#d4edda; color:#155724; padding:10px; margin:10px 0; }
+        .error-box { background:#f8d7da; color:#721c24; padding:10px; margin:10px 0; }
+        .btn-primary { padding:10px 20px; background:#007bff; color:#fff; border:none; cursor:pointer; margin:5px; }
+        .btn-card { padding:10px 20px; background:#28a745; color:#fff; border:none; cursor:pointer; margin:5px; }
+    </style>
+</head>
+
+<body>
+    <?php include_once 'assets/Component/navbar.php'; ?>
+
+    <div style="max-width:600px; margin:50px auto; text-align:center;">
+        <h2>Hello, <?= htmlspecialchars($company_name) ?></h2>
+        <p>
+            Plan: <?= htmlspecialchars(ucfirst($plan)) ?> |
+            Amount: NPR <?= number_format($amount_npr, 2) ?>
+        </p>
+
+        <!-- Platform Selection -->
+        <div style="margin:20px 0;">
+            <label for="platformSelect">Select Platform:</label>
+            <select id="platformSelect">
+                <option value="">--Choose Platform--</option>
+                <option value="Facebook">Facebook</option>
+                <option value="Instagram">Instagram</option>
+                <option value="WhatsApp">WhatsApp</option>
+            </select>
+        </div>d
+
+        <!-- Payment Buttons -->
+        <button id="khaltiPayBtn" class="btn-primary">Pay with Khalti</button>
+        <button id="cardPayBtn" class="btn-card">Pay with Card (Demo)</button>
+
+        <div id="msgArea"></div>
+        <div class="action-btns" style="margin-top:20px;">
+            <div class="cancel-btn"><a href="dashboard.php">Cancel</a></div>
+        </div>
+    </div>
+
+    <script>
+        function showMessage(text, type) {
+            const box = document.createElement('div');
+            box.className = type === 'success' ? 'success-box' : 'error-box';
+            box.textContent = text;
+            const area = document.getElementById('msgArea');
+            area.innerHTML = '';
+            area.appendChild(box);
+        }
+
+        function handlePaymentSuccess(payment_method) {
+            const platform = document.getElementById('platformSelect').value;
+            if (!platform) {
+                alert("Please select a platform first!");
+                return;
+            }
+
+            const params = new URLSearchParams();
+            params.set('plan', '<?= $plan ?>');
+            params.set('amount', '<?= $amount_npr ?>');
+            params.set('payment_method', payment_method);
+            params.set('platform', platform);
+
+            fetch('payment/add_tokens.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'same-origin',
+                body: params.toString()
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.success) {
+                    showMessage('Payment successful! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = 'agent2.php';
+                    }, 1200);
+                } else {
+                    showMessage('Payment processed but token update failed: ' + (data && data.message ? data.message : 'Unknown error'), 'error');
+                }
+            })
+            .catch(err => {
+                showMessage('Network/Server error: ' + err.message, 'error');
+            });
+        }
+
+        // Khalti Payment
+        var khaltiConfig = {
+            publicKey: "<?= $khalti_public ?>",
+            productIdentity: "PLAN_<?= $plan ?>_USER_<?= $user_id ?>",
+            productName: "Agent Payment <?= ucfirst($plan) ?>",
+            productUrl: window.location.href,
+            eventHandler: {
+                onSuccess(payload) { handlePaymentSuccess("Khalti"); },
+                onError(err) { console.log(err); alert("Khalti Payment Failed"); },
+                onClose() { console.log("Widget closed"); }
+            },
+            paymentPreference: ["KHALTI"]
+        };
+        var checkout = new KhaltiCheckout(khaltiConfig);
+        document.getElementById("khaltiPayBtn").addEventListener("click", function() {
+            checkout.show({ amount: <?= $amount_paisa ?> });
+        });
+
+        // Demo Card Payment
+        document.getElementById("cardPayBtn").addEventListener("click", function() {
+            if (confirm("Proceed with demo card payment?")) {
+                handlePaymentSuccess("Card(Demo)");
+            }
+        });
+    </script>
+
+    <?php include_once 'assets/Component/footer.php'; ?>
+</body>
+</html>
+
+=========
+Pricing.php
+========
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent | Pricing</title>
+    <link rel="stylesheet" href="assets/css/navbar.css">
+    <link rel="stylesheet" href="assets/css/login.css">
+    <link rel="stylesheet" href="assets/css/footer.css">
+    <link rel="stylesheet" href="assets/css/pricing.css">
+</head>
+
+<body>
+    <?php include_once'assets/Component/navbar.php'?>
+    <h1 class="text-center">Pick the best plan for you</h1>
+
+<div class="pricing-box-container">
+    <div class="pricing-box text-center">
+        <h5>Free</h5>
+        <p class="price"><sup>$</sup>0<sub>/mo</sub></p>
+        <ul class="features-list">
+            <li><strong>1000</strong> Notifications</li>
+            <li><strong>5</strong> Team Members</li>
+            <li><strong>50</strong> Personal Projects</li>
+            <li><strong>5,000</strong> Messages</li>
+        </ul>
+        <a href="payment.php?plan=free&amount=0" class="btn-primary">Get Started</a>
+    </div>
+
+    <div class="pricing-box pricing-box-bg-image text-center">
+        <h5>Premium</h5>
+        <p class="price"><sup>$</sup>39<sub>/mo</sub></p>
+        <ul class="features-list">
+            <li><strong>5000</strong> Notifications</li>
+            <li><strong>20</strong> Team Members</li>
+            <li><strong>100</strong> Personal Projects</li>
+            <li><strong>15,000</strong> Messages</li>
+        </ul>
+        <a href="payment.php?plan=premium&amount=39" class="btn-primary">Get Started</a>
+    </div>
+
+    <div class="pricing-box text-center">
+        <h5>Platinum</h5>
+        <p class="price"><sup>$</sup>89<sub>/mo</sub></p>
+        <ul class="features-list">
+            <li><strong>2500</strong> Notifications</li>
+            <li><strong>50</strong> Team Members</li>
+            <li><strong>500</strong> Personal Projects</li>
+            <li><strong>50,000</strong> Messages</li>
+        </ul>
+        <a href="payment.php?plan=platinum&amount=89" class="btn-primary">Get Started</a>
+    </div>
+</div>
+
+
+ <?php include_once'assets/Component/footer.php'?>
+</body>
+
+</html>
+
+
+========================
+approve_payment.php
+
+<?php
+session_start();
+require_once '../config/database.php';
+
+$id = $_GET['id'] ?? 0;
+
+// Fetch payment
+$stmt = $pdo->prepare("SELECT * FROM payment_requests WHERE id=?");
+$stmt->execute([$id]);
+$pay = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$pay) {
+    die("Payment not found");
+}
+
+if ($pay['status'] != 'pending') {
+    die("Already processed");
+}
+
+// Define tokens per plan
+$plan_tokens = ['free' => 0, 'premium' => 10, 'platinum' => 20]; // Example token values
+$tokens = $plan_tokens[$pay['plan']] ?? 0;
+
+$message = '';
+try {
+    $pdo->beginTransaction();
+
+    // Mark as approved
+    $pdo->prepare("UPDATE payment_requests SET status='approved' WHERE id=?")->execute([$id]);
+
+    // Update message balance
+    $check = $pdo->prepare("SELECT id, total_messages FROM message_balance WHERE payment_id=? AND company_name=?");
+    $check->execute([$id, $pay['company_name']]);
+    $exist = $check->fetch(PDO::FETCH_ASSOC);
+
+    if ($exist) {
+        // Update existing row
+        $newTotal = $exist['total_messages'] + $tokens;
+        $pdo->prepare("UPDATE message_balance SET total_messages=?, last_updated=NOW() WHERE payment_id=? AND company_name=?")
+            ->execute([$newTotal, $id, $pay['company_name']]);
+    } else {
+        // Insert new row
+        $pdo->prepare("INSERT INTO message_balance (payment_id, company_name, total_messages, messages_used, last_updated) 
+                       VALUES (?, ?, ?, 0, NOW())")
+            ->execute([$id, $pay['company_name'], $tokens]);
+    }
+
+    $pdo->commit();
+
+    // Mail user (optional)
+    @mail("user@example.com", "Payment Approved", "Your payment is verified. Tokens added!");
+
+    $message = "Payment approved and tokens added successfully!";
+} catch (Exception $e) {
+    $pdo->rollBack();
+    $message = "Error: " . $e->getMessage();
+}
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Payment Status</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .message-box {
+            background: #fff;
+            padding: 30px 50px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            text-align: center;
+            font-size: 1.2rem;
+            color: #333;
+            position: relative;
+            animation: fadeOut 0.5s ease 2.5s forwards;
+        }
+        .success { border-left: 6px solid #4CAF50; }
+        .error { border-left: 6px solid #f44336; }
+
+        @keyframes fadeOut {
+            to { opacity: 0; transform: translateY(-20px); }
+        }
+    </style>
+    <script>
+        // Redirect after 3 seconds
+        setTimeout(function(){
+            window.location.href = 'payments.php';
+        }, 3000);
+    </script>
+</head>
+<body>
+    <div class="message-box <?= strpos($message,'Error') === false ? 'success' : 'error' ?>">
+        <?= htmlspecialchars($message) ?>
+    </div>
+</body>
+</html>
+
+
+
+===========================================
+manageagents.php
+
+<?php
+session_start();
+require_once __DIR__ . '/config/database.php'; // $pdo (PDO) DB connection
+
+// --------------------
+// Auth check
+// --------------------
+if (!isset($_SESSION['id']) || !isset($_SESSION['companyname'])) {
+    header("Location: ./assets/component/login.php");
+    exit;
+}
+
+$user_id = (int) $_SESSION['id'];
+$session_company_name = $_SESSION['companyname'] ?? '';
+
+// Allowed platform values (canonicalized)
+const ALLOWED_PLATFORMS = ['Facebook', 'Instagram', 'WhatsApp'];
+
+// Basic flash helper
+function flash($type, $msg)
+{
+    $_SESSION['flash'][] = ['type' => $type, 'msg' => $msg];
+}
+
+// Canonicalize platform label
+function canon_platform(?string $p): ?string
+{
+    if ($p === null) return null;
+    $p = trim($p);
+    $map = [
+        'facebook' => 'Facebook',
+        'instagram' => 'Instagram',
+        'whatsapp' => 'WhatsApp',
+        'whats app' => 'WhatsApp',
+        'whats-app' => 'WhatsApp',
+        'free' => 'free'
+    ];
+    $k = strtolower($p);
+    return $map[$k] ?? $p;
+}
+
+// --------------------
+// Handle Delete
+// --------------------
+if (isset($_GET['delete_id'])) {
+    $delete_id = (int) $_GET['delete_id'];
+    $stmt = $pdo->prepare("DELETE FROM agents WHERE id = :id AND user_id = :user_id");
+    $stmt->execute([':id' => $delete_id, ':user_id' => $user_id]);
+    flash('success', 'Agent deleted.');
+    header("Location: manageagents.php");
+    exit;
+}
+
+// --------------------
+// Handle Toggle enable/disable
+// --------------------
+if (isset($_GET['toggle_id'])) {
+    $toggle_id = (int) $_GET['toggle_id'];
+
+    $stmt = $pdo->prepare("SELECT status FROM agents WHERE id = :id AND user_id = :user_id");
+    $stmt->execute([':id' => $toggle_id, ':user_id' => $user_id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($row) {
+        $new_status = ($row['status'] == 1) ? 0 : 1;
+        $stmt_update = $pdo->prepare("UPDATE agents SET status = :status WHERE id = :id AND user_id = :user_id");
+        $stmt_update->execute([':status' => $new_status, ':id' => $toggle_id, ':user_id' => $user_id]);
+        flash('success', 'Agent status updated.');
+    }
+
+    header("Location: manageagents.php");
+    exit;
+}
+
+// --------------------
+// Handle Plan rename
+// --------------------
+if (!empty($_POST['rename_id']) && isset($_POST['new_name'])) {
+    $rename_id = (int) $_POST['rename_id'];
+    $new_name = trim($_POST['new_name']);
+
+    if ($new_name !== '') {
+        $stmt = $pdo->prepare("UPDATE agents SET plan = :plan WHERE id = :id AND user_id = :user_id");
+        $stmt->execute([':plan' => $new_name, ':id' => $rename_id, ':user_id' => $user_id]);
+        flash('success', 'Plan renamed.');
+    } else {
+        flash('error', 'Plan name cannot be empty.');
+    }
+
+    header("Location: manageagents.php");
+    exit;
+}
+
+// --------------------
+// Handle Platform change (only shown when platform = 'free')
+// --------------------
+if (!empty($_POST['platform_id']) && !empty($_POST['new_platform'])) {
+    $platform_id  = (int) $_POST['platform_id'];
+    $new_platform = canon_platform($_POST['new_platform']);
+
+    if (!in_array($new_platform, ALLOWED_PLATFORMS, true)) {
+        flash('error', 'Invalid platform selected.');
+        header("Location: manageagents.php");
+        exit;
+    }
+
+    // Get the agent row first
+    $stmt_agent = $pdo->prepare("SELECT id, company_name, platform, payment_id FROM agents WHERE id = :id AND user_id = :user_id");
+    $stmt_agent->execute([':id' => $platform_id, ':user_id' => $user_id]);
+    $agent = $stmt_agent->fetch(PDO::FETCH_ASSOC);
+
+    if (!$agent) {
+        flash('error', 'Agent not found.');
+        header("Location: manageagents.php");
+        exit;
+    }
+
+    // Only allow change if current platform is 'free'
+    if (strtolower((string)$agent['platform']) !== 'free') {
+        flash('error', 'Platform change is only available when current platform is set to "free".');
+        header("Location: manageagents.php");
+        exit;
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        // 1) Update agents.platform
+        $stmt = $pdo->prepare("UPDATE agents SET platform = :platform WHERE id = :id AND user_id = :user_id");
+        $stmt->execute([':platform' => $new_platform, ':id' => $platform_id, ':user_id' => $user_id]);
+
+        // 2) Update message_balance.platform for this company only where platform = 'free' (or NULL)
+        $stmt_mb = $pdo->prepare("
+            UPDATE message_balance
+            SET platform = :platform
+            WHERE company_name = :company_name
+              AND (platform IS NULL OR LOWER(platform) = 'free')
+        ");
+        $stmt_mb->execute([
+            ':platform' => $new_platform,
+            ':company_name' => $agent['company_name']
+        ]);
+
+        // 3) Update payment_requests.platform if this agent originated from a payment
+        if (!empty($agent['payment_id'])) {
+            $stmt_pr = $pdo->prepare("UPDATE payment_requests SET platform = :platform WHERE id = :pid");
+            $stmt_pr->execute([':platform' => $new_platform, ':pid' => $agent['payment_id']]);
+        }
+
+        $pdo->commit();
+        flash('success', 'Platform updated successfully.');
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        flash('error', 'Update failed: ' . $e->getMessage());
+    }
+
+    header("Location: manageagents.php");
+    exit;
+}
+
+// --------------------
+// Auto-insert new agents from approved payments
+// (only if not already present via payment_id)
+// --------------------
+$stmt_new_agents = $pdo->prepare("
+    SELECT id, platform, plan, company_name
+    FROM payment_requests
+    WHERE user_id = :user_id AND status = 'approved'
+");
+$stmt_new_agents->execute([':user_id' => $user_id]);
+$new_agents = $stmt_new_agents->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($new_agents as $payment) {
+    $check = $pdo->prepare("SELECT COUNT(*) FROM agents WHERE payment_id = :payment_id AND user_id = :user_id");
+    $check->execute([':payment_id' => $payment['id'], ':user_id' => $user_id]);
+    if ((int)$check->fetchColumn() === 0) {
+        $insertAgent = $pdo->prepare("
+            INSERT INTO agents (user_id, company_name, platform, plan, payment_id, status)
+            VALUES (:user_id, :company_name, :platform, :plan, :payment_id, 1)
+        ");
+        $insertAgent->execute([
+            ':user_id' => $user_id,
+            ':company_name' => $payment['company_name'] ?: $session_company_name,
+            ':platform' => $payment['platform'],
+            ':plan' => $payment['plan'],
+            ':payment_id' => $payment['id']
+        ]);
+    }
+}
+
+// --------------------
+// Fetch agents for view
+// --------------------
+$stmt = $pdo->prepare("
+    SELECT id, company_name, platform, plan, status, created_at
+    FROM agents
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC, id DESC
+");
+$stmt->execute([':user_id' => $user_id]);
+$agents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Pull and clear flash
+$flashes = $_SESSION['flash'] ?? [];
+unset($_SESSION['flash']);
+?>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Agents</title>
+    <link rel="stylesheet" href="assets/css/navbar.css">
+    <link rel="stylesheet" href="assets/css/footer.css">
+    <style>
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #222;
+            --muted: #666;
+            --border: #e6e8ee;
+            --primary: #2563eb;
+            --primary-hover: #1e4fd4;
+            --danger: #ef4444;
+            --danger-hover: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+            --radius: 14px;
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 24px auto 40px;
+            padding: 0 16px;
+        }
+
+        .panel {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 22px;
+        }
+
+        h2 {
+            margin: 0 0 12px;
+            font-size: 1.6rem;
+            letter-spacing: -0.02em;
+        }
+
+        .helper {
+            color: var(--muted);
+            font-size: 0.95rem;
+            margin-bottom: 18px;
+        }
+
+        /* Flash messages */
+        .flash {
+            padding: 12px 14px;
+            border-radius: 12px;
+            margin: 8px 0 14px;
+            font-size: 0.95rem;
+            border: 1px solid;
+        }
+
+        .flash.success {
+            background: #ecfdf5;
+            color: #065f46;
+            border-color: #a7f3d0;
+        }
+
+        .flash.error {
+            background: #fef2f2;
+            color: #7f1d1d;
+            border-color: #fecaca;
+        }
+
+        /* Agent list */
+        .list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .agent-card {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px 14px;
+            padding: 14px 16px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            transition: box-shadow .2s ease, transform .05s ease;
+        }
+
+        .agent-card:hover {
+            box-shadow: var(--shadow);
+            transform: translateY(-1px);
+        }
+
+        .main {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 240px;
+        }
+
+        .title {
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: #111827;
+            background: #f9fafb;
+        }
+
+        .badge.status-on {
+            background: #ecfdf5;
+            color: #065f46;
+            border-color: #a7f3d0;
+        }
+
+        .badge.status-off {
+            background: #fff7ed;
+            color: #7c2d12;
+            border-color: #fed7aa;
+        }
+
+        .meta {
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        /* Actions */
+        .actions {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        button,
+        .btn {
+            border: none;
+            border-radius: 10px;
+            padding: 8px 12px;
+            font-weight: 600;
+            cursor: pointer;
+            background: #f3f4f6;
+            color: #111827;
+            transition: background .15s ease, box-shadow .15s ease, transform .02s ease-in-out;
+            border: 1px solid var(--border);
+        }
+
+        button:hover,
+        .btn:hover {
+            background: #e5e7eb;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        button:active,
+        .btn:active {
+            transform: translateY(1px);
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            border-color: transparent;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            border-color: transparent;
+            color: #fff;
+            text-decoration: none;
+        }
+
+        .btn-danger:hover {
+            background: var(--danger-hover);
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            border-color: transparent;
+            color: #ffffffff;
+            text-decoration: none;
+        }
+
+        .btn-success {
+            background: var(--success);
+            border-color: transparent;
+            color: #fff;
+        }
+
+        /* Inline form controls */
+        input[type="text"],
+        select {
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 0.95rem;
+            background: #fff;
+            min-width: 180px;
+        }
+
+        select {
+            min-width: 180px;
+        }
+
+        /* Grouped small form */
+        .inline-form {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Responsive */
+        @media (max-width: 720px) {
+            .agent-card {
+                align-items: flex-start;
+            }
+
+            .main {
+                width: 100%;
+            }
+
+            .actions {
+                width: 100%;
+            }
+
+            input[type="text"],
+            select,
+            button {
+                width: 100%;
+            }
+        }
+
+        .back {
+            margin-top: 16px;
+            display: inline-block;
+        }
+    </style>
+</head>
+
+<body>
+    <?php include_once 'assets/component/navbar.php'; ?>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Manage Your Agents</h2>
+            <div class="helper">Change platform for entries that are currently set to <strong>free</strong>, toggle status, rename plan, or delete agents.</div>
+
+            <?php foreach ($flashes as $f): ?>
+                <div class="flash <?php echo htmlspecialchars($f['type']); ?>"><?php echo htmlspecialchars($f['msg']); ?></div>
+            <?php endforeach; ?>
+
+            <?php if (!$agents): ?>
+                <p class="meta">No agents found.</p>
+            <?php else: ?>
+                <div class="list">
+                    <?php foreach ($agents as $row):
+                        $status_on = (int)$row['status'] === 1;
+                        $platform_label = canon_platform($row['platform']);
+                        $plan_label = $row['plan'] !== null ? (string)$row['plan'] : '';
+                        $title = ($platform_label ?: 'Unnamed Platform') . ($plan_label ? ' · ' . ucfirst($plan_label) : '');
+                        $is_free = strtolower((string)$row['platform']) === 'free';
+                    ?>
+                        <div class="agent-card">
+                            <div class="main">
+                                <span class="title">
+                                    <?php echo htmlspecialchars($title); ?>
+                                </span>
+                                <span class="badge <?php echo $status_on ? 'status-on' : 'status-off'; ?>">
+                                    <?php echo $status_on ? 'Enabled' : 'Disabled'; ?>
+                                </span>
+                                <span class="badge">Company: <?php echo htmlspecialchars($row['company_name']); ?></span>
+                                <span class="badge">Created: <?php echo htmlspecialchars($row['created_at'] ?? ''); ?></span>
+                            </div>
+
+                            <div class="actions">
+                                <!-- Platform change dropdown: only when platform is 'free' -->
+                                <?php if ($is_free): ?>
+                                    <form class="inline-form" action="manageagents.php" method="POST">
+                                        <input type="hidden" name="platform_id" value="<?php echo (int)$row['id']; ?>">
+                                        <select name="new_platform" required>
+                                            <option value="">Select Platform</option>
+                                            <?php foreach (ALLOWED_PLATFORMS as $opt): ?>
+                                                <option value="<?php echo $opt; ?>"><?php echo $opt; ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <button type="submit" class="btn btn-primary">Update Platform</button>
+                                    </form>
+                                <?php else: ?>
+                                    <span class="meta">Platform: <?php echo htmlspecialchars($platform_label); ?></span>
+                                <?php endif; ?>
+
+                                <!-- Toggle enable/disable -->
+                                <a class="btn <?php echo $status_on ? 'btn-warning' : 'btn-success'; ?>"
+                                    href="manageagents.php?toggle_id=<?php echo (int)$row['id']; ?>"
+                                    onclick="return confirm('Are you sure you want to <?php echo $status_on ? 'disable' : 'enable'; ?> this agent?');">
+                                    <?php echo $status_on ? 'Disable' : 'Enable'; ?>
+                                </a>
+
+                                <!-- Delete -->
+                                <a class="btn btn-danger"
+                                    href="manageagents.php?delete_id=<?php echo (int)$row['id']; ?>"
+                                    onclick="return confirm('Delete this agent? This action cannot be undone.');">
+                                    Delete
+                                </a>
+
+                                <!-- Rename plan -->
+                                <form class="inline-form" action="manageagents.php" method="POST">
+                                    <input type="hidden" name="rename_id" value="<?php echo (int)$row['id']; ?>">
+                                    <input type="text" name="new_name" placeholder="New plan name">
+                                    <button type="submit" class="btn">Rename Plan</button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Added -->
+                        <?php foreach ($agents as $row):
+                            $platform = strtolower($row['platform']);
+                        ?>
+                            <div class="agent-card">
+                                <span>Agent: <?php echo htmlspecialchars($row['company_name']); ?> (<?php echo $row['platform']; ?>)</span>
+
+                                <?php if ($platform === 'facebook' || $platform === 'instagram'): ?>
+                                    <form method="GET" action="facebook_connect.php" style="display:inline-block;">
+                                        <input type="hidden" name="agent_id" value="<?php echo $row['id']; ?>">
+                                        <input type="hidden" name="platform" value="<?php echo $row['platform']; ?>">
+                                        <button type="submit" class="btn btn-primary">Connect <?php echo $row['platform']; ?> Page</button>
+                                    </form>
+                                <?php elseif ($platform === 'whatsapp'): ?>
+                                    <form method="POST" action="connect_whatsapp.php" style="display:inline-block;">
+                                        <input type="hidden" name="agent_id" value="<?php echo $row['id']; ?>">
+                                        <input type="text" name="phone_number" placeholder="Enter WhatsApp number" required>
+                                        <button type="submit" class="btn btn-success">Connect WhatsApp</button>
+                                    </form>
+                                <?php endif; ?>
+
+                                <!-- Show connected link -->
+                                <?php
+                                $stmt = $pdo->prepare("SELECT * FROM agent_connections WHERE agent_id = :agent_id AND platform = :platform");
+                                $stmt->execute([':agent_id' => $row['id'], ':platform' => $row['platform']]);
+                                $connection = $stmt->fetch(PDO::FETCH_ASSOC);
+                                if ($connection):
+                                ?>
+                                    <span class="badge">Connected:
+                                        <?php if ($platform === 'whatsapp'): ?>
+                                            <a href="<?php echo $connection['link']; ?>" target="_blank"><?php echo htmlspecialchars($connection['link']); ?></a>
+                                        <?php else: ?>
+                                            <a href="<?php echo $connection['link']; ?>" target="_blank"><?php echo htmlspecialchars($connection['page_name']); ?></a>
+                                        <?php endif; ?>
+                                    </span>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+
+                        <!-- Added end-->
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <a class="btn back" href="dashboard.php">← Back to Dashboard</a>
+        </div>
+    </div>
+    <?php if (!empty($flashes)): ?>
+        <script>
+            // Auto redirect to agent.php after 1 second
+            setTimeout(function() {
+                window.location.href = "agent.php";
+            }, 1000);
+        </script>
+    <?php endif; ?>
+
+    <?php include_once 'assets/component/footer.php'; ?>
+</body>
+
+</html>
+
+
+===================================================\
+dahboard.php
+===============================================
+<?php
+session_start();
+require_once 'config/database.php';
+
+// --- Check login ---
+if (!isset($_SESSION['id']) || !isset($_SESSION['companyname'])) {
+    echo '<!DOCTYPE html>
+    <html lang="en">
+    <head><meta charset="UTF-8"><title>Access Denied</title></head>
+    <body><h2>Please login to access dashboard</h2></body>
+    </html>';
+    exit;
+}
+
+$user_id = (int)$_SESSION['id'];
+$company_name = $_SESSION['companyname'] ?? '';
+
+// --- Date Filter ---
+$from_date = $_GET['from_date'] ?? '';
+$to_date   = $_GET['to_date'] ?? '';
+
+// --- Fetch message balance for line chart ---
+$query = "SELECT total_messages, messages_used, DATE(last_updated) as date
+          FROM message_balance
+          WHERE company_name = :company_name";
+$params = [':company_name' => $company_name];
+
+if ($from_date && $to_date) {
+    $query .= " AND DATE(last_updated) BETWEEN :from_date AND :to_date";
+    $params[':from_date'] = $from_date;
+    $params[':to_date'] = $to_date;
+}
+
+$query .= " ORDER BY last_updated ASC";
+$stmt_balance = $pdo->prepare($query);
+$stmt_balance->execute($params);
+$balance_result = $stmt_balance->fetchAll(PDO::FETCH_ASSOC);
+
+$labels = [];
+$messageData = [];
+$totalMessages = 0;
+$totalUsed = 0;
+$latestBalance = null;
+
+foreach ($balance_result as $row) {
+    $totalMessages += (int)$row['total_messages'];
+    $totalUsed += (int)$row['messages_used'];
+    $remaining = $totalMessages - $totalUsed;
+
+    $labels[] = $row['date'];
+    $messageData[] = $remaining;
+    $latestBalance = [
+        'total_messages' => $totalMessages,
+        'messages_used' => $totalUsed,
+        'remaining' => $remaining
+    ];
+}
+
+// --- Fetch agents and their pages ---
+$stmt_agents = $pdo->prepare("
+    SELECT id, platform, plan
+    FROM agents
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC
+");
+$stmt_agents->execute([':user_id' => $user_id]);
+$agents = $stmt_agents->fetchAll(PDO::FETCH_ASSOC);
+
+// Attach pages to each agent
+foreach ($agents as &$agent) {
+    $stmt_pages = $pdo->prepare("SELECT id, page_name FROM agent_pages WHERE agent_id = :agent_id");
+    $stmt_pages->execute([':agent_id' => $agent['id']]);
+    $agent['pages'] = $stmt_pages->fetchAll(PDO::FETCH_ASSOC);
+}
+unset($agent); // break reference
+
+// --- Fetch message balance grouped by platform (for pie charts) ---
+$agentCharts = [];
+foreach ($agents as $agent) {
+    $stmt_platform = $pdo->prepare("
+        SELECT SUM(total_messages) as total, SUM(messages_used) as used
+        FROM message_balance
+        WHERE company_name = :company_name AND platform = :platform
+    ");
+    $stmt_platform->execute([
+        ':company_name' => $company_name,
+        ':platform' => $agent['platform']
+    ]);
+    $row = $stmt_platform->fetch(PDO::FETCH_ASSOC);
+
+    if ($row) {
+        $agentCharts[] = [
+            'agent_id' => $agent['id'],
+            'platform' => $agent['platform'],
+            'plan' => $agent['plan'],
+            'total' => (int)$row['total'],
+            'used' => (int)$row['used']
+        ];
+    }
+}
+
+// --- Handle Add Page POST ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['agent_id'], $_POST['platform'], $_POST['page_name'])) {
+    $agent_id = $_POST['agent_id'];
+    $platform = $_POST['platform'];
+    $page_name = $_POST['page_name'];
+
+    if (!empty($agent_id) && !empty($platform) && !empty($page_name)) {
+        $stmt = $pdo->prepare("INSERT INTO agent_pages (agent_id, page_name, platform) 
+                               VALUES (:agent_id, :page_name, :platform)");
+        $stmt->execute([
+            ':agent_id' => $agent_id,
+            ':page_name' => $page_name,
+            ':platform' => $platform
+        ]);
+
+        $new_page_id = $pdo->lastInsertId();
+        header("Location: agent.php?page_id=" . $new_page_id);
+        exit;
+    }
+}
+
+// --- If viewing single agent by GET ---
+$agent_id = $_GET['agent_id'] ?? null;
+$agentDetail = null;
+if ($agent_id) {
+    $stmt = $pdo->prepare("SELECT id, platform, plan FROM agents WHERE id = :id AND user_id = :user_id");
+    $stmt->execute([
+        ':id' => $agent_id,
+        ':user_id' => $user_id
+    ]);
+    $agentDetail = $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+?>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agents Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="assets/css/main.css">
+    <link rel="stylesheet" href="assets/css/navbar.css">
+    <link rel="stylesheet" href="assets/css/footer.css">
+    <style>
+        /* ======= Styles omitted for brevity (keep your existing CSS) ======= */
+    </style>
+</head>
+
+<body>
+    <?php include_once 'assets/component/navbar.php'; ?>
+
+    <h1 class="agent-heading">Page Dashboard</h1>
+
+    <!-- Date Filter -->
+    <div class="section">
+        <form method="get" style="text-align:center; margin-bottom:20px;">
+            <label>From: <input type="date" name="from_date" value="<?= htmlspecialchars($from_date) ?>"></label>
+            <label>To: <input type="date" name="to_date" value="<?= htmlspecialchars($to_date) ?>"></label>
+            <button type="submit">Filter</button>
+        </form>
+    </div>
+
+    <!-- Agents List -->
+    <div class="section">
+        <h2>Pages</h2>
+        <div class="agents-list">
+            <?php if (!empty($agents)): ?>
+                <?php foreach ($agents as $agent): ?>
+                    <div class="agent-card">
+                        <img src="images/background.jpg" alt="Agent Icon" class="agent-image">
+                        <h3><?= htmlspecialchars($agent['platform']) ?> (<?= htmlspecialchars($agent['plan']) ?>)</h3>
+
+                        <?php if (!empty($agent['pages'])): ?>
+                            <ul style="list-style:none; padding:0; margin-top:10px;">
+                                <?php foreach ($agent['pages'] as $page): ?>
+                                    <li>
+                                        <a href="agent.php?page_id=<?= $page['id'] ?>">
+                                            <?= htmlspecialchars($page['page_name']) ?>
+                                        </a>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php else: ?>
+                            <p style="color:#777;">No pages yet</p>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <p style="text-align:center;">No agents available.</p>
+            <?php endif; ?>
+        </div>
+
+        <div style="text-align:center; margin-top:20px;">
+            <button type="button" class="add-agent-btn" onclick="window.location.href='managepages.php'">Manage Your Pages</button>
+            <button type="button" class="add-agent-btn" onclick="openModal()">Add Page</button>
+        </div>
+    </div>
+
+    <!-- Add Page Modal -->
+    <div id="addPageModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2>Add New Page</h2>
+            <form method="post">
+                <label for="agent_id">Select Agent:</label>
+                <select name="agent_id" id="agent_id" required>
+                    <option value="">-- Choose Agent --</option>
+                    <?php foreach ($agents as $a): ?>
+                        <option value="<?= $a['id'] ?>"><?= htmlspecialchars($a['platform'] . " (" . $a['plan'] . ")") ?></option>
+                    <?php endforeach; ?>
+                </select>
+
+                <label for="platform">Platform:</label>
+                <select name="platform" id="platform" required>
+                    <option value="">-- Select Platform --</option>
+                    <option value="Facebook">Facebook</option>
+                    <option value="Instagram">Instagram</option>
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Messenger">Messenger</option>
+                    <option value="Telegram">Telegram</option>
+                </select>
+
+                <label for="page_name">Page Name:</label>
+                <input type="text" name="page_name" id="page_name" required>
+
+                <button type="submit" class="add-agent-btn">Create Page</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Message Balance Cards -->
+    <?php if ($latestBalance): ?>
+        <div class="message-balance-card">
+            <div style="background:#e0f7fa; padding:20px; border-radius:10px; text-align:center; width:100%;">
+                <h3>Total Messages</h3>
+                <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['total_messages'] ?></p>
+            </div>
+            <div style="background:#fff3e0; padding:20px; border-radius:10px; text-align:center; width:100%;">
+                <h3>Messages Used</h3>
+                <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['messages_used'] ?></p>
+            </div>
+            <div style="background:#e8f5e9; padding:20px; border-radius:10px; text-align:center; width:100%;">
+                <h3>Remaining Messages</h3>
+                <p style="font-size:1.5rem; font-weight:bold;"><?= $latestBalance['remaining'] ?></p>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <!-- Daily Remaining Messages Chart -->
+    <div class="section">
+        <h2 style="text-align:center;">Messages Usage</h2>
+        <canvas id="dailyMessageChart" style="max-width:1000px; margin:20px auto; display:block; width: 100%; height: 400px;"></canvas>
+        <script>
+            const ctx = document.getElementById('dailyMessageChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: <?= json_encode($labels) ?>,
+                    datasets: [{
+                        label: 'Remaining Messages',
+                        data: <?= json_encode($messageData) ?>,
+                        backgroundColor: 'rgba(54,162,235,0.2)',
+                        borderColor: 'rgba(54,162,235,1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Messages'
+                            }
+                        }
+                    }
+                }
+            });
+        </script>
+    </div>
+
+    <!-- Pie Charts for each page -->
+<div class="pie-charts-container">
+    <?php foreach ($agents as $agent):
+        if (!empty($agent['pages'])):
+            foreach ($agent['pages'] as $index => $page):
+                // Fetch message balance for this specific page
+                $stmt_platform = $pdo->prepare("
+                    SELECT SUM(total_messages) AS total, SUM(messages_used) AS used
+                    FROM message_balance mb
+                    JOIN agent_pages ap ON ap.platform = mb.platform AND ap.agent_id = :agent_id
+                    WHERE mb.company_name = :company_name AND ap.id = :page_id
+                ");
+                $stmt_platform->execute([
+                    ':company_name' => $company_name,
+                    ':agent_id' => $agent['id'],
+                    ':page_id' => $page['id']
+                ]);
+                $row = $stmt_platform->fetch(PDO::FETCH_ASSOC);
+
+                $total = (int)($row['total'] ?? 0);
+                $used  = (int)($row['used'] ?? 0);
+                $remaining = max(0, $total - $used);
+                $canvasId = "pieChart_" . $agent['id'] . "_" . $index;
+
+                // Only show chart if there is a message balance
+                if ($total > 0 || $used > 0):
+    ?>
+                <div class="pie-chart-card">
+                    <h3><?= htmlspecialchars($page['platform']) ?></h3>
+                    <canvas id="<?= $canvasId ?>"></canvas>
+                </div>
+                <script>
+                    new Chart(document.getElementById("<?= $canvasId ?>"), {
+                        type: 'pie',
+                        data: {
+                            labels: ['Used', 'Remaining'],
+                            datasets: [{
+                                data: [<?= $used ?>, <?= $remaining ?>],
+                                backgroundColor: ['#ef5350', '#66bb6a']
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom'
+                                }
+                            }
+                        }
+                    });
+                </script>
+    <?php
+                endif;
+            endforeach;
+        endif;
+    endforeach;
+    ?>
+</div>
+
+
+    <script>
+        function openModal() {
+            document.getElementById("addPageModal").style.display = "block";
+        }
+
+        function closeModal() {
+            document.getElementById("addPageModal").style.display = "none";
+        }
+
+        window.onclick = function(event) {
+            if (event.target == document.getElementById("addPageModal")) {
+                closeModal();
+            }
+        }
+    </script>
+
+    <?php include_once 'assets/component/footer.php'; ?>
+</body>
+
+</html>
+
+
+
+
+
+Fileupload.php
+<?php
+session_start();
+if (!isset($_SESSION['id'])) {
+    echo '<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Access Denied</title>
+        <style>
+            body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: Arial, sans-serif; background-color: #fff3f3; }
+            .alert-box { background: #ffe2e2; border: 1px solid #e53e3e; padding: 30px 50px; border-radius: 10px; color: #c53030; text-align: center; box-shadow: 0 0 10px rgba(229, 62, 62, 0.3); font-size: 1.3rem; }
+            .alert-box small { display: block; margin-top: 10px; color: #666; font-size: 1rem; }
+        </style>
+        <script>
+            setTimeout(() => { window.location.href = "assets/component/login.php"; }, 3000);
+        </script>
+    </head>
+    <body>
+        <div class="alert-box">
+            ⚠️ Please <strong>LOGIN</strong> to access the <strong>DASHBOARD</strong>.
+            <small>Redirecting to login page...</small>
+        </div>
+    </body>
+    </html>';
+    exit;
+}
+
+include_once 'config/database.php';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Upload CSV - AI Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/navbar.css">
+<link rel="stylesheet" href="assets/css/login.css">
+<link rel="stylesheet" href="assets/css/footer.css">
+<link rel="stylesheet" href="assets/css/fileupload.css">
+</head>
+<body>
+
+<?php include_once 'assets/component/navbar.php'; ?>
+
+<div class="file-container">
+    <div class="file-left">
+        <h2 class="file-h2">CSV File Upload</h2>
+        <p>Upload CSV file to train your AI with product or workflow details.</p>
+
+        <label for="csvType">Select CSV Type:</label>
+        <select id="csvType" style="margin-bottom: 15px; padding: 5px 10px;">
+            <option value="">-- Select Type --</option>
+            <option value="products">Products</option>
+            <option value="details">Details</option>
+        </select>
+
+        <div class="file-note">⚠️ Only CSV files allowed. Max size: 400 KB</div>
+        <div id="dropArea" class="drop-area-file">
+            Drag & drop CSV here, or click to select<br>
+            <small>Supported: CSV only (Max 400 KB)</small>
+            <input type="file" id="fileInput" style="display: none;" />
+        </div>
+    </div>
+
+    <div class="file-right">
+        <h3>Sources</h3>
+        <div class="meta">Total size: <span id="fileSize">0 B / 400 KB</span></div>
+        <div class="action-buttons">
+            <button class="create-agent-btn-file" id="trainAgentBtn">Train Agent</button>
+        </div>
+    </div>
+</div>
+
+<div class="uploaded-section">
+    <h3>Selected File</h3>
+    <div id="uploadedFiles" class="uploaded-list"></div>
+</div>
+
+<script>
+const dropArea = document.getElementById('dropArea');
+const fileInput = document.getElementById('fileInput');
+const fileSizeText = document.getElementById('fileSize');
+const uploadedFilesDiv = document.getElementById('uploadedFiles');
+let selectedFile = null;
+const MAX_SIZE = 400 * 1024; // 400 KB
+
+function formatBytes(bytes) {
+    const sizes = ['B', 'KB', 'MB'];
+    if (bytes === 0) return '0 B';
+    const i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
+    return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + sizes[i];
+}
+
+dropArea.addEventListener('click', () => fileInput.click());
+dropArea.addEventListener('dragover', (e) => { e.preventDefault(); dropArea.style.borderColor = '#000'; });
+dropArea.addEventListener('dragleave', () => { dropArea.style.borderColor = '#ccc'; });
+dropArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropArea.style.borderColor = '#ccc';
+    handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+
+function handleFile(file) {
+    if (!file) return;
+
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext !== 'csv') {
+        alert("❌ Only CSV files are allowed!");
+        fileInput.value = "";
+        return;
+    }
+
+    if (file.size > MAX_SIZE) {
+        alert("❌ File exceeds 400 KB limit!");
+        fileInput.value = "";
+        return;
+    }
+
+    selectedFile = file;
+    fileSizeText.textContent = formatBytes(file.size) + ' / 400 KB';
+    uploadedFilesDiv.innerHTML = `<div class="uploaded-file"><strong>${file.name}</strong> (${formatBytes(file.size)})</div>`;
+}
+
+document.getElementById("trainAgentBtn").addEventListener("click", function(e) {
+    e.preventDefault();
+
+    const csvType = document.getElementById("csvType").value;
+    if (!csvType) {
+        alert("Please select a CSV type before uploading!");
+        return;
+    }
+
+    if (!selectedFile) {
+        alert("Please select a CSV file before training the agent!");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("csv_file", selectedFile);
+    formData.append("csv_type", csvType);
+
+    fetch("assets/component/importCSV.php", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => res.text())
+    .then(response => {
+        const [status, message] = response.split("|");
+        
+        if (status.trim() === "success") {
+            alert("✅ " + message);
+            window.location.href = "dashboard.php";
+        } else {
+            alert("❌ " + message);
+        }
+    })
+    .catch(err => {
+        alert("❌ An error occurred: " + err);
+    });
+});
+</script>
+
+<?php include_once 'assets/component/footer.php'; ?>
+</body>
+</html>

@@ -1,0 +1,136 @@
+    .file-container {
+      display: flex;
+      gap: 2rem;
+      flex-wrap: wrap;
+      margin: 30px 0px 70px 0px;
+    }
+
+    .file-left,
+    .file-right {
+      background: #fff;
+      padding: 2rem;
+      border-radius: 12px;
+      height: 250px;
+    }
+
+    .file-left {
+      flex: 2;
+      min-width: 300px;
+    }
+
+    .file-right {
+      flex: 1;
+      min-width: 250px;
+      background: #f4f4f4;
+    }
+
+    .file-h2 {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .file-note {
+      background: #fff3cd;
+      color: #856404;
+      padding: 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      border: 1px solid #ffeeba;
+    }
+
+    .drop-area-file {
+      border: 2px dashed #ccc;
+      padding: 2rem;
+      text-align: center;
+      border-radius: 12px;
+      background: #fafafa;
+      cursor: pointer;
+    }
+
+    .drop-area-file:hover {
+      border-color: #999;
+    }
+
+    .file-content {
+      margin-top: 1rem;
+      background: #fff;
+      padding: 1rem;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .download-link-file,
+    .create-agent-btn-file {
+      display: inline-block;
+      margin-top: 1.5rem;
+      padding: 0.75rem 1.25rem;
+      background: #000;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+    }
+
+    .create-agent-btn-file a {
+      text-decoration: none;
+      color: #fff;
+    }
+
+    .meta {
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .uploaded-section {
+      margin-top: 30px;
+      padding: 15px 30px;
+      background: #f7f7f7;
+      border-radius: 6px;
+    }
+
+    .uploaded-file {
+      margin: 10px 0;
+      background: #fff;
+      padding: 10px;
+      border-left: 4px solid #007BFF;
+      border-radius: 4px;
+    }
+
+    .uploaded-file button {
+      margin-left: 10px;
+      padding: 3px 8px;
+    }
+
+    .action-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .action-buttons button,
+    .action-buttons a {
+      text-align: center;
+    }
+
+    /* @media (max-width: 600px) {
+    
+}
+    @media (max-width: 600px) {
+     */
+/* } */
+    @media (max-width: 600px) {
+      .file-container {
+        flex-direction: column;
+      }
+      .file-left,
+      .file-right {
+        height: auto;
+      }
+}
